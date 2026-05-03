@@ -557,9 +557,6 @@ static StatsEntry BuildStatsEntry(string directoryPath, string rootWebPath, stri
         sortKey);
 }
 
-record StatsRoot(string RelativePath, string PhysicalPath, string WebPath);
-record StatsEntry(string Name, string Type, string BrowseUrl, string? ReportUrl, string SortKey);
-
 static string BuildLegacyEventsUrl(string legacyCoreBaseUrl, HttpRequest request)
 {
     var startDate = request.Query["sd"].ToString();
@@ -659,3 +656,6 @@ static string? GetJsonString(JsonElement item, string propertyName)
         _ => value.ToString()
     };
 }
+
+record StatsRoot(string RelativePath, string PhysicalPath, string WebPath);
+record StatsEntry(string Name, string Type, string BrowseUrl, string? ReportUrl, string SortKey);

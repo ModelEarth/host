@@ -33,12 +33,13 @@ Relevant shared variables:
 - `DOTNET_SITE_ROOT`
 - `DOTNET_STATS_ROOT`
 - `CORE_HOST`
-- `CORT_PORT`
+- `CORE_PORT`
 - `CORE_NAME`
 - `CORE_USER`
 - `CORE_PASSWORD`
 - `CORE_SSL_MODE`
 - `CORE_PROVIDER`
+- `DOTNET_LEGACY_CORE_BASE_URL`
 
 ## Code CLI Commands
 

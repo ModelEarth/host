@@ -25,6 +25,7 @@ Notes:
 - Do not assume those files are the source of truth for local shared development settings.
 - Do not break existing AWS EC2 / RDS production connection flows in legacy repos unless explicitly asked.
 - `CoreDatabase` placeholders live in `docker/.env` and `docker/.env.example`.
+- `CORE_*` is for the Microsoft SQL Server Core database and normally uses port `1433`.
 
 Relevant shared variables:
 - `DOTNET_HOST`

@@ -1,9 +1,13 @@
 using Microsoft.Extensions.FileProviders;
+using System.Net;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 
 var siteRoot = ResolveSiteRoot();
 var fileProvider = new PhysicalFileProvider(siteRoot);
 var fallbackToRootOnMissing = GetBooleanSetting("DOTNET_FALLBACK_TO_ROOT_ON_MISSING", defaultValue: false);
 var statsRootSetting = Environment.GetEnvironmentVariable("DOTNET_STATS_ROOT") ?? "Stats";
+var legacyCoreBaseUrl = (Environment.GetEnvironmentVariable("DOTNET_LEGACY_CORE_BASE_URL") ?? "http://localhost:8004/core").TrimEnd('/');
 var builder = WebApplication.CreateSlimBuilder(args);
 
 builder.WebHost.UseUrls(GetUrls());
@@ -103,6 +107,148 @@ app.MapGet("/api/core10/stats/browser", (HttpRequest request) =>
         entries,
         error
     });
+});
+
+app.MapGet("/api/core10/events", async (HttpRequest request) =>
+{
+    var legacyUrl = BuildLegacyEventsUrl(legacyCoreBaseUrl, request);
+    try
+    {
+        using var httpClient = new HttpClient();
+        using var response = await httpClient.GetAsync(legacyUrl);
+        var payload = await response.Content.ReadAsStringAsync();
+
+        if (!response.IsSuccessStatusCode)
+        {
+            return Results.Json(new
+            {
+                ok = false,
+                source = legacyUrl,
+                error = $"Legacy events source returned {(int)response.StatusCode}."
+            }, statusCode: StatusCodes.Status502BadGateway);
+        }
+
+        using var document = JsonDocument.Parse(payload);
+        var root = document.RootElement;
+        var items = new List<object>();
+
+        if (root.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in root.EnumerateArray())
+            {
+                items.Add(new
+                {
+                    id = GetJsonString(item, "id"),
+                    title = GetJsonString(item, "title"),
+                    description = GetJsonString(item, "description"),
+                    start = GetJsonString(item, "start"),
+                    end = GetJsonString(item, "end"),
+                    location = GetJsonString(item, "location"),
+                    url = GetJsonString(item, "url"),
+                    thumbnail = GetJsonString(item, "thumbnail"),
+                    allDay = GetJsonString(item, "allDay"),
+                    city = GetJsonString(item, "city"),
+                    state = GetJsonString(item, "state")
+                });
+            }
+        }
+
+        return Results.Json(new
+        {
+            ok = true,
+            source = legacyUrl,
+            items
+        });
+    }
+    catch (Exception ex)
+    {
+        return Results.Json(new
+        {
+            ok = false,
+            source = legacyUrl,
+            error = $"Unable to load legacy events feed: {ex.Message}"
+        }, statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+
+app.MapGet("/api/core10/news", async () =>
+{
+    var sources = new[]
+    {
+        $"{legacyCoreBaseUrl}/news/list.aspx",
+        $"{legacyCoreBaseUrl}/news/default.aspx"
+    };
+
+    foreach (var source in sources)
+    {
+        try
+        {
+            using var httpClient = new HttpClient();
+            using var response = await httpClient.GetAsync(source);
+            if (!response.IsSuccessStatusCode)
+            {
+                continue;
+            }
+
+            var html = await response.Content.ReadAsStringAsync();
+            var items = ParseLegacyNewsItems(html);
+            if (items.Count == 0)
+            {
+                continue;
+            }
+
+            return Results.Json(new
+            {
+                ok = true,
+                title = "core10 News",
+                subtitle = "Live adapter over the legacy .NET 4.x news pages.",
+                description = "This API now prefers legacy runtime content over the temporary file-backed source.",
+                source = new
+                {
+                    legacyPage = source,
+                    legacyTypes = new[]
+                    {
+                        "84001 Announcement",
+                        "87000 Discussion",
+                        "80200 Specials"
+                    },
+                    storage = "legacy-adapter"
+                },
+                actions = new[]
+                {
+                    new { label = "Add News", url = "/core/item/add.aspx?tid=84001", status = "legacy" },
+                    new { label = "Send Email", url = "/core/mail/send.aspx", status = "legacy" },
+                    new { label = "Feed Reference", url = "/core10/about/", status = "ported" }
+                },
+                sections = new[]
+                {
+                    new
+                    {
+                        id = "legacy-news",
+                        title = "Live News Items",
+                        items = items
+                    }
+                },
+                socialSources = new[]
+                {
+                    new
+                    {
+                        label = "Legacy adapter status",
+                        summary = "This page is now sourcing content from the legacy .NET 4.x news pages instead of a checked-in JSON file."
+                    }
+                }
+            });
+        }
+        catch
+        {
+        }
+    }
+
+    return Results.Json(new
+    {
+        ok = false,
+        error = $"Legacy news source is unavailable at {legacyCoreBaseUrl}."
+    }, statusCode: StatusCodes.Status502BadGateway);
 });
 
 app.Use(async (context, next) =>
@@ -329,8 +475,12 @@ static List<StatsRoot> DiscoverStatsCandidates(string siteRoot)
             var relativePath = Path.GetRelativePath(siteRoot, path);
             if (relativePath.StartsWith(".git", StringComparison.OrdinalIgnoreCase)
                 || relativePath.Contains($"{Path.DirectorySeparatorChar}.git{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase)
+                || relativePath.Contains($"{Path.DirectorySeparatorChar}env{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase)
+                || relativePath.Contains($"{Path.DirectorySeparatorChar}site-packages{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase)
                 || relativePath.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase)
-                || relativePath.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase))
+                || relativePath.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase)
+                || relativePath.Replace('\\', '/').Equals("core10/admin/stats", StringComparison.OrdinalIgnoreCase)
+                || relativePath.Replace('\\', '/').Equals("storm/impact/stats", StringComparison.OrdinalIgnoreCase))
             {
                 return false;
             }
@@ -409,3 +559,103 @@ static StatsEntry BuildStatsEntry(string directoryPath, string rootWebPath, stri
 
 record StatsRoot(string RelativePath, string PhysicalPath, string WebPath);
 record StatsEntry(string Name, string Type, string BrowseUrl, string? ReportUrl, string SortKey);
+
+static string BuildLegacyEventsUrl(string legacyCoreBaseUrl, HttpRequest request)
+{
+    var startDate = request.Query["sd"].ToString();
+    var endDate = request.Query["ed"].ToString();
+
+    if (string.IsNullOrWhiteSpace(startDate))
+    {
+        startDate = DateTime.Today.ToString("MM/dd/yyyy");
+    }
+
+    if (string.IsNullOrWhiteSpace(endDate))
+    {
+        endDate = DateTime.Today.AddDays(60).ToString("MM/dd/yyyy");
+    }
+
+    var query = new List<string>
+    {
+        "admin=1",
+        "json=1",
+        $"sd={Uri.EscapeDataString(startDate)}",
+        $"ed={Uri.EscapeDataString(endDate)}"
+    };
+
+    foreach (var key in new[] { "siteid", "calsiteid", "tid", "k", "zip", "distance", "cityid", "max", "search", "forcal", "tnl", "p", "locationid" })
+    {
+        var value = request.Query[key].ToString();
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            query.Add($"{key}={Uri.EscapeDataString(value)}");
+        }
+    }
+
+    return $"{legacyCoreBaseUrl}/event/fullcalendarfeed.aspx?{string.Join("&", query)}";
+}
+
+static List<object> ParseLegacyNewsItems(string html)
+{
+    var items = new List<object>();
+    var itemRegex = new Regex(
+        "<a[^>]+href=[\"'](?<link>[^\"']+)[\"'][^>]*>\\s*<span[^>]*class=['\"]newstitle['\"][^>]*>(?<title>.*?)</span>\\s*</a>(?<after>.*?)(?=(<a[^>]+href=[\"'][^\"']+[\"'][^>]*>\\s*<span[^>]*class=['\"]newstitle['\"])|$)",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+    foreach (Match match in itemRegex.Matches(html))
+    {
+        var title = CleanLegacyHtml(match.Groups["title"].Value);
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            continue;
+        }
+
+        var link = WebUtility.HtmlDecode(match.Groups["link"].Value);
+        var after = match.Groups["after"].Value;
+        var summaryMatch = Regex.Match(after, "<div[^>]*class=['\"]?pagebody['\"]?[^>]*>(?<summary>.*?)</div>", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        var summary = summaryMatch.Success
+            ? CleanLegacyHtml(summaryMatch.Groups["summary"].Value)
+            : CleanLegacyHtml(after);
+
+        items.Add(new
+        {
+            title,
+            summary,
+            kind = "Legacy Content",
+            link
+        });
+
+        if (items.Count >= 12)
+        {
+            break;
+        }
+    }
+
+    return items;
+}
+
+static string CleanLegacyHtml(string value)
+{
+    var normalized = Regex.Replace(value ?? string.Empty, "<br\\s*/?>", "\n", RegexOptions.IgnoreCase);
+    normalized = Regex.Replace(normalized, "<.*?>", string.Empty, RegexOptions.Singleline);
+    normalized = WebUtility.HtmlDecode(normalized);
+    normalized = Regex.Replace(normalized, "\\s+", " ").Trim();
+    return normalized;
+}
+
+static string? GetJsonString(JsonElement item, string propertyName)
+{
+    if (!item.TryGetProperty(propertyName, out var value))
+    {
+        return null;
+    }
+
+    return value.ValueKind switch
+    {
+        JsonValueKind.String => value.GetString(),
+        JsonValueKind.Number => value.ToString(),
+        JsonValueKind.True => "true",
+        JsonValueKind.False => "false",
+        _ => value.ToString()
+    };
+}

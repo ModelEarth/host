@@ -1,0 +1,3 @@
+path: /
+backend: localhost
+port: 8010

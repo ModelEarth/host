@@ -1,0 +1,20 @@
+# Shared .NET host settings for webroot development.
+# This is intentionally stack-neutral and can be read by shell, Python, or future tools.
+
+app_name: webroot-dotnet
+project_dir: host/net
+project_file: host/net/Webroot.csproj
+target_framework: net10.0
+assembly_name: Webroot
+host: localhost
+port: 8010
+health_path: /healthz
+sdk_channel: 10.0
+site_root: .
+stats_root: Stats
+fallback_to_root_on_missing: false
+log_file: host/net/server.log
+legacy_net_path: net
+legacy_net_port: 8004
+legacy_core_path: core
+legacy_core_port: 8004
